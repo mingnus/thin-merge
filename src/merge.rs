@@ -1,14 +1,18 @@
 use anyhow::{anyhow, Result};
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 use std::thread;
-
 use thinp::commands::engine::*;
 use thinp::io_engine::IoEngine;
+use thinp::pdata::btree::{self, *};
+use thinp::pdata::btree_error::KeyRange;
+use thinp::pdata::btree_leaf_walker::{LeafVisitor, LeafWalker};
 use thinp::pdata::btree_walker::btree_to_map;
 use thinp::pdata::space_map::common::SMRoot;
 use thinp::pdata::space_map::metadata::core_metadata_sm;
+use thinp::pdata::space_map::RestrictedSpaceMap;
 use thinp::pdata::unpack::unpack;
 use thinp::report::Report;
 use thinp::thin::block_time::*;
@@ -20,16 +24,10 @@ use thinp::thin::restore::Restorer;
 use thinp::thin::superblock::*;
 use thinp::write_batcher::WriteBatcher;
 
-//------------------------------------------
+use crate::mapping_iterator::MappingIterator;
+use crate::stream::MappingStream;
 
-use std::collections::BTreeMap;
-use thinp::io_engine::Block;
-use thinp::pdata::btree::{self, *};
-use thinp::pdata::btree_error::KeyRange;
-use thinp::pdata::btree_leaf_walker::LeafVisitor;
-use thinp::pdata::btree_leaf_walker::LeafWalker;
-use thinp::pdata::space_map::RestrictedSpaceMap;
-use thinp::pdata::unpack::Unpack;
+//------------------------------------------
 
 const QUEUE_DEPTH: usize = 4;
 const BUFFER_LEN: usize = 1024;
@@ -79,188 +77,6 @@ fn collect_leaves(
     Ok(map)
 }
 
-//------------------------------------------
-
-struct MappingIterator {
-    engine: Arc<dyn IoEngine + Send + Sync>,
-    leaves: Vec<u64>,
-    batch_size: usize,
-    cached_leaves: Vec<Block>,
-    node: Node<BlockTime>,
-    nr_entries: usize, // nr_entries in the current visiting node
-    pos: [usize; 2],   // leaf index and entry index in leaf
-}
-
-impl MappingIterator {
-    fn new(engine: Arc<dyn IoEngine + Send + Sync>, leaves: Vec<u64>) -> Result<Self> {
-        let batch_size = engine.get_batch_size();
-        let len = std::cmp::min(batch_size, leaves.len());
-        let cached_leaves = Self::read_blocks(&engine, &leaves[..len])?;
-        let node =
-            unpack_node::<BlockTime>(&[], cached_leaves[0].get_data(), true, leaves.len() > 1)?;
-        let nr_entries = Self::get_nr_entries(&node);
-
-        let pos = [0, 0];
-
-        Ok(Self {
-            engine,
-            leaves,
-            batch_size,
-            cached_leaves,
-            node,
-            nr_entries,
-            pos,
-        })
-    }
-
-    fn read_blocks(
-        engine: &Arc<dyn IoEngine + Send + Sync>,
-        blocks: &[u64],
-    ) -> std::io::Result<Vec<Block>> {
-        engine.read_many(blocks)?.into_iter().collect()
-    }
-
-    fn get(&self) -> Option<(u64, &BlockTime)> {
-        if self.pos[0] < self.leaves.len() {
-            match &self.node {
-                Node::Internal { .. } => {
-                    panic!("not a leaf");
-                }
-                Node::Leaf { keys, values, .. } => {
-                    if keys.is_empty() {
-                        None
-                    } else {
-                        Some((keys[self.pos[1]], &values[self.pos[1]]))
-                    }
-                }
-            }
-        } else {
-            None
-        }
-    }
-
-    fn get_nr_entries<V: Unpack>(node: &Node<V>) -> usize {
-        match node {
-            Node::Internal { header, .. } => header.nr_entries as usize,
-            Node::Leaf { header, .. } => header.nr_entries as usize,
-        }
-    }
-
-    fn inc_pos(&mut self) -> bool {
-        if self.pos[0] < self.leaves.len() {
-            self.pos[1] += 1;
-            self.pos[1] >= self.nr_entries
-        } else {
-            false
-        }
-    }
-
-    fn next_node(&mut self) -> Result<()> {
-        self.pos[0] += 1;
-        self.pos[1] = 0;
-
-        if self.pos[0] == self.leaves.len() {
-            return Ok(()); // reach the end
-        }
-
-        let idx = self.pos[0] % self.batch_size;
-
-        // FIXME: reuse the code in the constructor
-        if idx == 0 {
-            let endpos = std::cmp::min(self.pos[0] + self.batch_size, self.leaves.len());
-            self.cached_leaves =
-                Self::read_blocks(&self.engine, &self.leaves[self.pos[0]..endpos])?;
-        }
-
-        self.node = unpack_node::<BlockTime>(&[], self.cached_leaves[idx].get_data(), true, true)?;
-        self.nr_entries = Self::get_nr_entries(&self.node);
-
-        Ok(())
-    }
-
-    fn step(&mut self) -> Result<()> {
-        if self.inc_pos() {
-            self.next_node()?;
-        }
-        Ok(())
-    }
-}
-
-//------------------------------------------
-
-struct MappingStream {
-    iter: MappingIterator,
-    current: Option<(u64, BlockTime)>,
-}
-
-impl MappingStream {
-    fn new(engine: Arc<dyn IoEngine + Send + Sync>, leaves: Vec<u64>) -> Result<Self> {
-        let iter = MappingIterator::new(engine, leaves)?;
-        let current = iter.get().map(|(k, v)| (k, *v));
-        Ok(Self { iter, current })
-    }
-
-    fn more_mappings(&self) -> bool {
-        self.current.is_some()
-    }
-
-    fn get_mapping(&self) -> Option<&(u64, BlockTime)> {
-        self.current.as_ref()
-    }
-
-    fn consume(&mut self) -> Result<Option<(u64, BlockTime)>> {
-        /*self.iter.step()?;
-        match self.iter.get() {
-            Some(m) => {
-                let prev = self.current.replace(m);
-                Ok(prev)
-            }
-            None => {
-                let prev = self.current.take();
-                Ok(prev)
-            }
-        }*/
-
-        /*if self.more_mappings() {
-            self.iter.step()?;
-            let prev = match self.iter.get() {
-                Some((k, &v)) => self.current.replace((k, v)),
-                None => self.current.take(),
-            };
-            Ok(prev)
-        } else {
-            Ok(None)
-        }*/
-
-        match self.get_mapping() {
-            Some(&m) => {
-                let r = Ok(Some(m));
-                self.iter.step()?;
-                self.current = self.iter.get().map(|(k, &v)| (k, v));
-                r
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn step(&mut self) -> Result<()> {
-        /*if self.more_mappings() {
-            self.iter.step()?;
-            if let Some((k, &v)) = self.iter.get() {
-                self.current.replace((k, v));
-            } else {
-                self.current = None;
-            }
-        }*/
-
-        if self.more_mappings() {
-            self.iter.step()?;
-            self.current = self.iter.get().map(|(k, &v)| (k, v));
-        }
-        Ok(())
-    }
-}
-
 struct MergeIterator {
     base_stream: MappingStream,
     snap_stream: MappingStream,
@@ -281,19 +97,6 @@ impl MergeIterator {
             snap_stream,
         })
     }
-
-    /*fn consume_base(&mut self) -> Result<Option<(u64, BlockTime)>> {
-        match self.base_stream.get_mapping() {
-            Some(m) => {
-                let m = m.clone();
-                self.base_stream.next_mapping()?;
-                Ok(m)
-            }
-            None => {
-                Ok(None)
-            }
-        }
-    }*/
 
     fn next(&mut self) -> Result<Option<(u64, BlockTime)>> {
         match (
