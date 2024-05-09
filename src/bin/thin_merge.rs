@@ -17,6 +17,7 @@ impl ThinMergeCommand {
             .next_display_order(None)
             .version(thinp::tools_version!())
             .about("Merge an external snapshot and the in-pool origin into one device")
+            // flags
             .arg(
                 Arg::new("METADATA_SNAPSHOT")
                     .help("Use metadata snapshot")
@@ -24,6 +25,13 @@ impl ThinMergeCommand {
                     .long("metadata-snap")
                     .action(ArgAction::SetTrue),
             )
+            .arg(
+                Arg::new("REBASE")
+                    .help("Choose rebase instead of merge")
+                    .long("rebase")
+                    .action(ArgAction::SetTrue),
+            )
+            // options
             .arg(
                 Arg::new("ORIGIN")
                     .help("The numeric identifier for the external origin")
@@ -85,6 +93,7 @@ impl<'a> Command<'a> for ThinMergeCommand {
 
         let origin = *matches.get_one::<u64>("ORIGIN").unwrap();
         let snapshot = matches.get_one::<u64>("SNAPSHOT").cloned();
+        let rebase = matches.get_flag("REBASE");
 
         let opts = ThinMergeOptions {
             input: input_file,
@@ -93,6 +102,7 @@ impl<'a> Command<'a> for ThinMergeCommand {
             report: report.clone(),
             origin,
             snapshot,
+            rebase,
         };
 
         to_exit_code(&report, merge_thins(opts))

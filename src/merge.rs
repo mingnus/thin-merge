@@ -154,6 +154,7 @@ fn merge(
     sb: &Superblock,
     origin_id: u64,
     snap_id: u64,
+    rebase: bool,
 ) -> Result<()> {
     let sm = core_metadata_sm(engine_out.get_nr_blocks(), 2);
     let batch_size = engine_out.get_batch_size();
@@ -164,12 +165,15 @@ fn merge(
     let details =
         btree_to_map::<DeviceDetail>(&mut vec![], engine_in.clone(), false, sb.details_root)?;
 
+    let origin_dev = *details
+        .get(&origin_id)
+        .ok_or_else(|| anyhow!("Unable to find the details for the origin"))?;
     let origin_root = *roots
         .get(&origin_id)
         .ok_or_else(|| anyhow!("Unable to find mapping tree for the origin"))?;
     let snap_dev = *details
         .get(&snap_id)
-        .ok_or_else(|| anyhow!("Unable to find the details for the origin"))?;
+        .ok_or_else(|| anyhow!("Unable to find the details for the snapshot"))?;
     let snap_root = *roots
         .get(&snap_id)
         .ok_or_else(|| anyhow!("Unable to find mapping tree for the snapshot"))?;
@@ -188,12 +192,22 @@ fn merge(
         metadata_snap: None,
     };
 
-    let out_dev = ir::Device {
-        dev_id: snap_id as u32,
-        mapped_blocks: snap_dev.mapped_blocks,
-        transaction: snap_dev.transaction_id,
-        creation_time: snap_dev.creation_time,
-        snap_time: snap_dev.snapshotted_time,
+    let out_dev = if rebase {
+        ir::Device {
+            dev_id: snap_id as u32,
+            mapped_blocks: snap_dev.mapped_blocks,
+            transaction: snap_dev.transaction_id,
+            creation_time: snap_dev.creation_time,
+            snap_time: snap_dev.snapshotted_time,
+        }
+    } else {
+        ir::Device {
+            dev_id: origin_id as u32,
+            mapped_blocks: origin_dev.mapped_blocks,
+            transaction: origin_dev.transaction_id,
+            creation_time: origin_dev.creation_time,
+            snap_time: origin_dev.snapshotted_time,
+        }
     };
 
     let (tx, rx) = mpsc::sync_channel::<Vec<ir::Map>>(QUEUE_DEPTH);
@@ -354,6 +368,7 @@ pub struct ThinMergeOptions<'a> {
     pub report: Arc<Report>,
     pub origin: u64,
     pub snapshot: Option<u64>,
+    pub rebase: bool,
 }
 
 struct Context {
@@ -398,6 +413,7 @@ pub fn merge_thins(opts: ThinMergeOptions) -> Result<()> {
             &sb,
             opts.origin,
             snapshot,
+            opts.rebase,
         )
     } else {
         dump_single_device(ctx.engine_in, ctx.engine_out, ctx.report, &sb, opts.origin)
