@@ -378,7 +378,9 @@ struct Context {
 }
 
 fn mk_context(opts: &ThinMergeOptions) -> Result<Context> {
-    let engine_in = EngineBuilder::new(opts.input, &opts.engine_opts).build()?;
+    let engine_in = EngineBuilder::new(opts.input, &opts.engine_opts)
+        .exclusive(!opts.engine_opts.use_metadata_snap)
+        .build()?;
 
     let mut out_opts = opts.engine_opts.clone();
     out_opts.engine_type = EngineType::Sync; // sync write temporarily
