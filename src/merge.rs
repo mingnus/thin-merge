@@ -399,7 +399,16 @@ pub fn merge_thins(opts: ThinMergeOptions) -> Result<()> {
     let ctx = mk_context(&opts)?;
 
     let sb = if opts.engine_opts.use_metadata_snap {
-        read_superblock_snap(ctx.engine_in.as_ref())?
+        let actual_sb = read_superblock(ctx.engine_in.as_ref(), SUPERBLOCK_LOCATION)?;
+        if actual_sb.metadata_snap == 0 {
+            return Err(anyhow!("no current metadata snap"));
+        }
+        let mut sb_snap = read_superblock(ctx.engine_in.as_ref(), actual_sb.metadata_snap)?;
+        // patch the metadata snapshot to carry the data space map size information
+        sb_snap
+            .data_sm_root
+            .copy_from_slice(&actual_sb.data_sm_root);
+        sb_snap
     } else {
         read_superblock(ctx.engine_in.as_ref(), SUPERBLOCK_LOCATION)?
     };
