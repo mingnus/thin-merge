@@ -31,6 +31,7 @@ use crate::stream::MappingStream;
 
 const QUEUE_DEPTH: usize = 4;
 const BUFFER_LEN: usize = 1024;
+const WRITE_BATCH_SIZE: usize = 32;
 
 struct CollectLeaves {
     leaves: Vec<u64>,
@@ -157,8 +158,7 @@ fn merge(
     rebase: bool,
 ) -> Result<()> {
     let sm = core_metadata_sm(engine_out.get_nr_blocks(), 2);
-    let batch_size = engine_out.get_batch_size();
-    let mut w = WriteBatcher::new(engine_out.clone(), sm.clone(), batch_size);
+    let mut w = WriteBatcher::new(engine_out.clone(), sm.clone(), WRITE_BATCH_SIZE);
     let mut restorer = Restorer::new(&mut w, report);
 
     let roots = btree_to_map::<u64>(&mut vec![], engine_in.clone(), false, sb.mapping_root)?;
@@ -271,8 +271,7 @@ fn dump_single_device(
     dev_id: u64,
 ) -> Result<()> {
     let sm = core_metadata_sm(engine_out.get_nr_blocks(), 2);
-    let batch_size = engine_out.get_batch_size();
-    let mut w = WriteBatcher::new(engine_out, sm.clone(), batch_size);
+    let mut w = WriteBatcher::new(engine_out, sm.clone(), WRITE_BATCH_SIZE);
     let mut restorer = Restorer::new(&mut w, report);
 
     let roots = btree_to_map::<u64>(&mut vec![], engine_in.clone(), false, sb.mapping_root)?;

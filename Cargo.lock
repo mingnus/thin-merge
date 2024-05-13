@@ -432,7 +432,7 @@ dependencies = [
 [[package]]
 name = "thinp"
 version = "1.0.12"
-source = "git+https://github.com/jthornber/thin-provisioning-tools.git?tag=v1.0.12#b2d57dad4c3378544d7b36f3fc61e60989c5c092"
+source = "git+https://github.com/mingnus/thin-provisioning-tools.git?branch=2024-04-23-vectored-write#18c593ccd38256156787d5e7fc95fb8848f81fd7"
 dependencies = [
  "anyhow",
  "atty",
