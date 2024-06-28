@@ -1,0 +1,41 @@
+NAME
+  thin_merge
+
+SYNOPSIS
+  thin_merge [options] -i {device|file} -o {device|file}
+
+DESCRIPTION
+  thin_merge merges the data mappings of a thin external snapshot with its
+  origin, and writes the merged mappings to an output metadata storing in
+  different device or file. The output is then used to replace the metadata
+  of the destination pool, resulting in a thin-pool with one merged device.
+
+OPTIONS
+  -h, --help             Print help and exit.
+  -V, --version		 Print version information and exit.
+  -i, --input {device|file}	Input file or device with binary metadata.
+  -o, --output {device|file}	Output file or device for binary metadata.
+
+    If a file is used for output, then it must be preallocated, and large
+    enough to hold the metadata.
+
+  -m, --metadata-snap    Use the metadata snapshot.
+  --origin <natural>     The numeric identifier for the external origin.
+  --snapshot <natural>   The numeric identifier for the external snapshot.
+  --rebase               Choose rebase instead of merge.
+
+    By default, the merged device has device id identical to that of the external
+    origin, resembling a "merge" operation. The `--rebase` option changes the
+    device id to that of the external snapshot, resembling a "rebase" operation.
+
+EXAMPLE
+
+  Merges the data mappings of the external snapshot of id#1 with its origin of id#2
+  from the metadata on /dev/mapper/pool_meta, and writes the output to a temporary
+  device /dev/mapper/output_meta.
+
+    $ thin_merge -i /dev/mapper/pool_meta -o /dev/mapper/output_meta --snapshot 1 --origin 2
+
+DIAGNOSTICS
+
+  thin_merge returns an exit code of 0 for success or 1 for error.
