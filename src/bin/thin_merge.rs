@@ -15,8 +15,8 @@ impl ThinMergeCommand {
     fn cli(&self) -> clap::Command {
         let cmd = clap::Command::new(self.name())
             .next_display_order(None)
-            .version(thinp::tools_version!())
-            .about("Merge an external snapshot and the in-pool origin into one device")
+            .version(env!("CARGO_PKG_VERSION"))
+            .about("Merge an external snapshot with its origin into one device")
             // flags
             .arg(
                 Arg::new("METADATA_SNAPSHOT")
