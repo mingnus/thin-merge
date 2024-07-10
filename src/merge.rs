@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{mpsc, Arc};
@@ -17,7 +16,6 @@ use thinp::pdata::unpack::unpack;
 use thinp::report::Report;
 use thinp::thin::block_time::*;
 use thinp::thin::device_detail::DeviceDetail;
-use thinp::thin::dump::RunBuilder;
 use thinp::thin::ir::{self, MetadataVisitor};
 use thinp::thin::metadata_repair::is_superblock_consistent;
 use thinp::thin::restore::Restorer;
@@ -25,7 +23,7 @@ use thinp::thin::superblock::*;
 use thinp::write_batcher::WriteBatcher;
 
 use crate::mapping_iterator::MappingIterator;
-use crate::stream::MappingStream;
+use crate::stream::*;
 
 //------------------------------------------
 
@@ -72,12 +70,14 @@ fn collect_leaves(engine: Arc<dyn IoEngine + Send + Sync>, root: u64) -> Result<
     Ok(v.leaves)
 }
 
-struct MergeIterator {
+//------------------------------------------
+
+struct RangeMergeIterator {
     base_stream: MappingStream,
     snap_stream: MappingStream,
 }
 
-impl MergeIterator {
+impl RangeMergeIterator {
     fn new(
         engine: Arc<dyn IoEngine + Send + Sync>,
         base_root: u64,
@@ -94,28 +94,58 @@ impl MergeIterator {
         })
     }
 
-    fn next(&mut self) -> Result<Option<(u64, BlockTime)>> {
-        match (
-            self.base_stream.more_mappings(),
-            self.snap_stream.more_mappings(),
-        ) {
-            (true, true) => {
-                let base_map = self.base_stream.get_mapping().unwrap();
-                let snap_map = self.snap_stream.get_mapping().unwrap();
+    fn ends_before_started(left: &(u64, BlockTime, u64), right: &(u64, BlockTime, u64)) -> bool {
+        left.0 + left.2 <= right.0
+    }
 
-                match base_map.0.cmp(&snap_map.0) {
-                    Ordering::Less => self.base_stream.consume(),
-                    Ordering::Equal => {
-                        self.base_stream.step()?;
-                        self.snap_stream.consume()
+    fn overlays_tail(base: &(u64, BlockTime, u64), overlay: &(u64, BlockTime, u64)) -> bool {
+        base.0 < overlay.0
+    }
+
+    fn overlays_head(base: &(u64, BlockTime, u64), overlay: &(u64, BlockTime, u64)) -> bool {
+        overlay.0 + overlay.2 < base.0 + base.2
+    }
+
+    fn overlays_all(base: &(u64, BlockTime, u64), overlay: &(u64, BlockTime, u64)) -> bool {
+        base.0 + base.2 <= overlay.0 + overlay.2
+    }
+
+    fn next(&mut self) -> Result<Option<(u64, BlockTime, u64)>> {
+        while self.base_stream.more_mappings() && self.snap_stream.more_mappings() {
+            let mut base_map = self.base_stream.get_mapping().unwrap();
+            let snap_map = self.snap_stream.get_mapping().unwrap();
+
+            if Self::ends_before_started(snap_map, base_map) {
+                return self.snap_stream.consume_all();
+            } else if Self::ends_before_started(base_map, snap_map) {
+                return self.base_stream.consume_all();
+            } else if Self::overlays_tail(base_map, snap_map) {
+                let delta = snap_map.0 - base_map.0;
+                return self.base_stream.consume(delta);
+            } else if Self::overlays_head(base_map, snap_map) {
+                let intersected = snap_map.0 + snap_map.2 - base_map.0;
+                self.base_stream.skip(intersected)?;
+                return self.snap_stream.consume(snap_map.2);
+            } else {
+                while Self::overlays_all(base_map, snap_map) {
+                    self.base_stream.skip_all()?;
+                    if !self.base_stream.more_mappings() {
+                        break;
                     }
-                    Ordering::Greater => self.snap_stream.consume(),
+                    base_map = self.base_stream.get_mapping().unwrap();
                 }
             }
-            (true, false) => self.base_stream.consume(),
-            (false, true) => self.snap_stream.consume(),
-            (false, false) => Ok(None),
         }
+
+        if self.base_stream.more_mappings() {
+            return self.base_stream.consume_all();
+        }
+
+        if self.snap_stream.more_mappings() {
+            return self.snap_stream.consume_all();
+        }
+
+        Ok(None)
     }
 }
 
@@ -156,26 +186,24 @@ fn merge(
     let mut w = WriteBatcher::new(engine_out.clone(), sm.clone(), WRITE_BATCH_SIZE);
     let mut restorer = Restorer::new(&mut w, report);
 
-    let mut iter = MergeIterator::new(engine_in.clone(), origin_root, snap_root)?;
+    let mut iter = RangeMergeIterator::new(engine_in.clone(), origin_root, snap_root)?;
 
     let (tx, rx) = mpsc::sync_channel::<Vec<ir::Map>>(QUEUE_DEPTH);
 
     let merger = thread::spawn(move || -> Result<()> {
-        let mut builder = RunBuilder::new();
         let mut runs = Vec::with_capacity(BUFFER_LEN);
 
-        while let Some((k, v)) = iter.next()? {
-            if let Some(run) = builder.next(k, v.block, v.time) {
-                runs.push(run);
-                if runs.len() == BUFFER_LEN {
-                    tx.send(runs)?;
-                    runs = Vec::with_capacity(BUFFER_LEN);
-                }
+        while let Some((k, v, l)) = iter.next()? {
+            runs.push(ir::Map {
+                thin_begin: k,
+                data_begin: v.block,
+                time: v.time,
+                len: l,
+            });
+            if runs.len() == BUFFER_LEN {
+                tx.send(runs)?;
+                runs = Vec::with_capacity(BUFFER_LEN);
             }
-        }
-
-        if let Some(run) = builder.complete() {
-            runs.push(run);
         }
 
         if !runs.is_empty() {
@@ -229,22 +257,19 @@ fn dump_single_device(
     let (tx, rx) = mpsc::sync_channel::<Vec<ir::Map>>(QUEUE_DEPTH);
 
     let dumper = thread::spawn(move || -> Result<()> {
-        let mut builder = RunBuilder::new();
         let mut runs = Vec::with_capacity(BUFFER_LEN);
 
-        while let Some((k, v)) = iter.get() {
-            if let Some(run) = builder.next(k, v.block, v.time) {
-                runs.push(run);
-                if runs.len() == BUFFER_LEN {
-                    tx.send(runs)?;
-                    runs = Vec::with_capacity(BUFFER_LEN);
-                }
+        while let Some((k, v, l)) = iter.next_range()? {
+            runs.push(ir::Map {
+                thin_begin: k,
+                data_begin: v.block,
+                time: v.time,
+                len: l,
+            });
+            if runs.len() == BUFFER_LEN {
+                tx.send(runs)?;
+                runs = Vec::with_capacity(BUFFER_LEN);
             }
-            iter.step()?;
-        }
-
-        if let Some(run) = builder.complete() {
-            runs.push(run);
         }
 
         if !runs.is_empty() {

@@ -111,6 +111,35 @@ impl MappingIterator {
         }
         Ok(())
     }
+
+    pub fn next_range(&mut self) -> Result<Option<(u64, BlockTime, u64)>> {
+        let mut mapping: Option<(u64, BlockTime)> = None;
+        let mut len = 0;
+
+        while let Some((key, &bt)) = self.get() {
+            match mapping {
+                Some(m) => {
+                    if m.0 + len == key && m.1.block + len == bt.block && m.1.time == bt.time {
+                        len += 1;
+                        self.step()?;
+                    } else {
+                        break;
+                    }
+                }
+                None => {
+                    mapping = Some((key, bt));
+                    len = 1;
+                    self.step()?;
+                }
+            }
+        }
+
+        if len > 0 {
+            Ok(mapping.map(|m| (m.0, m.1, len)))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 //------------------------------------------
