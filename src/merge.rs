@@ -12,7 +12,7 @@ use thinp::pdata::btree_leaf_walker::{LeafVisitor, LeafWalker};
 use thinp::pdata::btree_walker::btree_to_map;
 use thinp::pdata::space_map::common::SMRoot;
 use thinp::pdata::space_map::metadata::core_metadata_sm;
-use thinp::pdata::space_map::RestrictedSpaceMap;
+use thinp::pdata::space_map::NoopSpaceMap;
 use thinp::pdata::unpack::unpack;
 use thinp::report::Report;
 use thinp::thin::block_time::*;
@@ -59,23 +59,17 @@ impl LeafVisitor<BlockTime> for CollectLeaves {
     }
 }
 
-fn collect_leaves(
-    engine: Arc<dyn IoEngine + Send + Sync>,
-    roots: &[u64],
-) -> Result<BTreeMap<u64, Vec<u64>>> {
-    let mut map: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-    let mut sm = RestrictedSpaceMap::new(engine.get_nr_blocks());
+fn collect_leaves(engine: Arc<dyn IoEngine + Send + Sync>, root: u64) -> Result<Vec<u64>> {
+    // Using NoopSpaceMap is sufficient as the ref counts are irrelevant in this case.
+    // Also, The LeafWalker ignores the ref counts in space map and walks visited nodes anyway.
+    let mut sm = NoopSpaceMap::new(engine.get_nr_blocks());
 
-    for r in roots {
-        let mut w = LeafWalker::new(engine.clone(), &mut sm, false);
-        let mut v = CollectLeaves::new();
-        let mut path = vec![0];
-        w.walk::<CollectLeaves, BlockTime>(&mut path, &mut v, *r)?;
+    let mut w = LeafWalker::new(engine.clone(), &mut sm, false);
+    let mut v = CollectLeaves::new();
+    let mut path = vec![0];
+    w.walk::<CollectLeaves, BlockTime>(&mut path, &mut v, root)?;
 
-        map.insert(*r, v.leaves);
-    }
-
-    Ok(map)
+    Ok(v.leaves)
 }
 
 struct MergeIterator {
@@ -89,9 +83,10 @@ impl MergeIterator {
         base_root: u64,
         snap_root: u64,
     ) -> Result<Self> {
-        let mut leaves = collect_leaves(engine.clone(), &[base_root, snap_root])?;
-        let base_stream = MappingStream::new(engine.clone(), leaves.remove(&base_root).unwrap())?;
-        let snap_stream = MappingStream::new(engine, leaves.remove(&snap_root).unwrap())?;
+        let base_leaves = collect_leaves(engine.clone(), base_root)?;
+        let snap_leaves = collect_leaves(engine.clone(), snap_root)?;
+        let base_stream = MappingStream::new(engine.clone(), base_leaves)?;
+        let snap_stream = MappingStream::new(engine, snap_leaves)?;
 
         Ok(Self {
             base_stream,
@@ -152,63 +147,16 @@ fn merge(
     engine_in: Arc<dyn IoEngine + Send + Sync>,
     engine_out: Arc<dyn IoEngine + Send + Sync>,
     report: Arc<Report>,
-    sb: &Superblock,
-    origin_id: u64,
-    snap_id: u64,
-    rebase: bool,
+    out_sb: &ir::Superblock,
+    out_dev: &ir::Device,
+    origin_root: u64,
+    snap_root: u64,
 ) -> Result<()> {
     let sm = core_metadata_sm(engine_out.get_nr_blocks(), 2);
     let mut w = WriteBatcher::new(engine_out.clone(), sm.clone(), WRITE_BATCH_SIZE);
     let mut restorer = Restorer::new(&mut w, report);
 
-    let roots = btree_to_map::<u64>(&mut vec![], engine_in.clone(), false, sb.mapping_root)?;
-    let details =
-        btree_to_map::<DeviceDetail>(&mut vec![], engine_in.clone(), false, sb.details_root)?;
-
-    let origin_dev = *details
-        .get(&origin_id)
-        .ok_or_else(|| anyhow!("Unable to find the details for the origin"))?;
-    let origin_root = *roots
-        .get(&origin_id)
-        .ok_or_else(|| anyhow!("Unable to find mapping tree for the origin"))?;
-    let snap_dev = *details
-        .get(&snap_id)
-        .ok_or_else(|| anyhow!("Unable to find the details for the snapshot"))?;
-    let snap_root = *roots
-        .get(&snap_id)
-        .ok_or_else(|| anyhow!("Unable to find mapping tree for the snapshot"))?;
-
     let mut iter = MergeIterator::new(engine_in.clone(), origin_root, snap_root)?;
-
-    let data_root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
-    let out_sb = ir::Superblock {
-        uuid: "".to_string(),
-        time: sb.time,
-        transaction: sb.transaction_id,
-        flags: None,
-        version: Some(sb.version),
-        data_block_size: sb.data_block_size,
-        nr_data_blocks: data_root.nr_blocks,
-        metadata_snap: None,
-    };
-
-    let out_dev = if rebase {
-        ir::Device {
-            dev_id: snap_id as u32,
-            mapped_blocks: snap_dev.mapped_blocks,
-            transaction: snap_dev.transaction_id,
-            creation_time: snap_dev.creation_time,
-            snap_time: snap_dev.snapshotted_time,
-        }
-    } else {
-        ir::Device {
-            dev_id: origin_id as u32,
-            mapped_blocks: origin_dev.mapped_blocks,
-            transaction: origin_dev.transaction_id,
-            creation_time: origin_dev.creation_time,
-            snap_time: origin_dev.snapshotted_time,
-        }
-    };
 
     let (tx, rx) = mpsc::sync_channel::<Vec<ir::Map>>(QUEUE_DEPTH);
 
@@ -238,8 +186,8 @@ fn merge(
         Ok(())
     });
 
-    restorer.superblock_b(&out_sb)?;
-    restorer.device_b(&out_dev)?;
+    restorer.superblock_b(out_sb)?;
+    restorer.device_b(out_dev)?;
 
     let mut mapped_blocks = 0;
     while let Ok(runs) = rx.recv() {
@@ -267,46 +215,16 @@ fn dump_single_device(
     engine_in: Arc<dyn IoEngine + Send + Sync>,
     engine_out: Arc<dyn IoEngine + Send + Sync>,
     report: Arc<Report>,
-    sb: &Superblock,
-    dev_id: u64,
+    out_sb: &ir::Superblock,
+    out_dev: &ir::Device,
+    root: u64,
 ) -> Result<()> {
     let sm = core_metadata_sm(engine_out.get_nr_blocks(), 2);
     let mut w = WriteBatcher::new(engine_out, sm.clone(), WRITE_BATCH_SIZE);
     let mut restorer = Restorer::new(&mut w, report);
 
-    let roots = btree_to_map::<u64>(&mut vec![], engine_in.clone(), false, sb.mapping_root)?;
-    let details =
-        btree_to_map::<DeviceDetail>(&mut vec![], engine_in.clone(), false, sb.details_root)?;
-
-    let root = *roots
-        .get(&dev_id)
-        .ok_or_else(|| anyhow!("Unable to find mapping tree for the origin"))?;
-    let details = *details
-        .get(&dev_id)
-        .ok_or_else(|| anyhow!("Unable to find the details for the origin"))?;
-
-    let mut leaves = collect_leaves(engine_in.clone(), &[root])?;
-    let mut iter = MappingIterator::new(engine_in, leaves.remove(&root).unwrap())?;
-
-    let data_root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
-    let out_sb = ir::Superblock {
-        uuid: "".to_string(),
-        time: sb.time,
-        transaction: sb.transaction_id,
-        flags: None,
-        version: Some(sb.version),
-        data_block_size: sb.data_block_size,
-        nr_data_blocks: data_root.nr_blocks,
-        metadata_snap: None,
-    };
-
-    let out_dev = ir::Device {
-        dev_id: dev_id as u32,
-        mapped_blocks: details.mapped_blocks,
-        transaction: details.transaction_id,
-        creation_time: details.creation_time,
-        snap_time: details.snapshotted_time,
-    };
+    let leaves = collect_leaves(engine_in.clone(), root)?;
+    let mut iter = MappingIterator::new(engine_in, leaves)?;
 
     let (tx, rx) = mpsc::sync_channel::<Vec<ir::Map>>(QUEUE_DEPTH);
 
@@ -337,8 +255,8 @@ fn dump_single_device(
         Ok(())
     });
 
-    restorer.superblock_b(&out_sb)?;
-    restorer.device_b(&out_dev)?;
+    restorer.superblock_b(out_sb)?;
+    restorer.device_b(out_dev)?;
 
     while let Ok(runs) = rx.recv() {
         for run in &runs {
@@ -394,20 +312,125 @@ fn mk_context(opts: &ThinMergeOptions) -> Result<Context> {
     })
 }
 
+fn read_patched_superblock_snap(engine: &dyn IoEngine) -> Result<Superblock> {
+    // here we don't use read_superblock_snap() as we need both the main superblock and the
+    // metadata snapshot.
+    let actual_sb = read_superblock(engine, SUPERBLOCK_LOCATION)?;
+    if actual_sb.metadata_snap == 0 {
+        return Err(anyhow!("no current metadata snap"));
+    }
+    let mut sb_snap = read_superblock(engine, actual_sb.metadata_snap)?;
+
+    // patch the metadata snapshot to carry the data space map size information
+    sb_snap
+        .data_sm_root
+        .copy_from_slice(&actual_sb.data_sm_root);
+
+    Ok(sb_snap)
+}
+
+fn get_device_root_and_details(
+    dev_id: u64,
+    roots: &BTreeMap<u64, u64>,
+    details: &BTreeMap<u64, DeviceDetail>,
+) -> Result<(u64, DeviceDetail)> {
+    let root = *roots
+        .get(&dev_id)
+        .ok_or_else(|| anyhow!("Unable to find mapping tree for the device {}", dev_id))?;
+    let details = *details
+        .get(&dev_id)
+        .ok_or_else(|| anyhow!("Unable to find the details for the device {}", dev_id))?;
+    Ok((root, details))
+}
+
+fn build_output_superblock(sb: &Superblock) -> Result<ir::Superblock> {
+    let data_root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
+    Ok(ir::Superblock {
+        uuid: "".to_string(),
+        time: sb.time,
+        transaction: sb.transaction_id,
+        flags: None,
+        version: Some(sb.version),
+        data_block_size: sb.data_block_size,
+        nr_data_blocks: data_root.nr_blocks,
+        metadata_snap: None,
+    })
+}
+
+fn build_output_device(dev_id: u64, details: &DeviceDetail) -> ir::Device {
+    ir::Device {
+        dev_id: dev_id as u32,
+        mapped_blocks: details.mapped_blocks,
+        transaction: details.transaction_id,
+        creation_time: details.creation_time,
+        snap_time: details.snapshotted_time,
+    }
+}
+
+fn merge_thins_(
+    ctx: Context,
+    sb: &Superblock,
+    origin_id: u64,
+    snap_id: Option<u64>,
+    rebase: bool,
+) -> Result<()> {
+    let out_sb = build_output_superblock(sb)?;
+
+    let roots = btree_to_map::<u64>(&mut vec![], ctx.engine_in.clone(), false, sb.mapping_root)?;
+    let details =
+        btree_to_map::<DeviceDetail>(&mut vec![], ctx.engine_in.clone(), false, sb.details_root)?;
+
+    let (origin_root, origin_details) = get_device_root_and_details(origin_id, &roots, &details)?;
+
+    if let Some(snap_id) = snap_id {
+        let (snap_root, snap_details) = get_device_root_and_details(snap_id, &roots, &details)?;
+
+        let out_dev = if rebase {
+            build_output_device(snap_id, &snap_details)
+        } else {
+            build_output_device(origin_id, &origin_details)
+        };
+
+        if origin_root == snap_root {
+            // fallback to dump a single device
+            dump_single_device(
+                ctx.engine_in,
+                ctx.engine_out,
+                ctx.report,
+                &out_sb,
+                &out_dev,
+                origin_root,
+            )
+        } else {
+            merge(
+                ctx.engine_in,
+                ctx.engine_out,
+                ctx.report,
+                &out_sb,
+                &out_dev,
+                origin_root,
+                snap_root,
+            )
+        }
+    } else {
+        let out_dev = build_output_device(origin_id, &origin_details);
+
+        dump_single_device(
+            ctx.engine_in,
+            ctx.engine_out,
+            ctx.report,
+            &out_sb,
+            &out_dev,
+            origin_root,
+        )
+    }
+}
+
 pub fn merge_thins(opts: ThinMergeOptions) -> Result<()> {
     let ctx = mk_context(&opts)?;
 
     let sb = if opts.engine_opts.use_metadata_snap {
-        let actual_sb = read_superblock(ctx.engine_in.as_ref(), SUPERBLOCK_LOCATION)?;
-        if actual_sb.metadata_snap == 0 {
-            return Err(anyhow!("no current metadata snap"));
-        }
-        let mut sb_snap = read_superblock(ctx.engine_in.as_ref(), actual_sb.metadata_snap)?;
-        // patch the metadata snapshot to carry the data space map size information
-        sb_snap
-            .data_sm_root
-            .copy_from_slice(&actual_sb.data_sm_root);
-        sb_snap
+        read_patched_superblock_snap(ctx.engine_in.as_ref())?
     } else {
         read_superblock(ctx.engine_in.as_ref(), SUPERBLOCK_LOCATION)?
     };
@@ -415,19 +438,7 @@ pub fn merge_thins(opts: ThinMergeOptions) -> Result<()> {
     // ensure the metadata is consistent
     is_superblock_consistent(sb.clone(), ctx.engine_in.clone(), false)?;
 
-    if let Some(snapshot) = opts.snapshot {
-        merge(
-            ctx.engine_in,
-            ctx.engine_out,
-            ctx.report,
-            &sb,
-            opts.origin,
-            snapshot,
-            opts.rebase,
-        )
-    } else {
-        dump_single_device(ctx.engine_in, ctx.engine_out, ctx.report, &sb, opts.origin)
-    }
+    merge_thins_(ctx, &sb, opts.origin, opts.snapshot, opts.rebase)
 }
 
 //------------------------------------------

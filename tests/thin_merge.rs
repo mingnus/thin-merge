@@ -65,14 +65,23 @@ impl<'a> Program<'a> for ThinMerge {
 }
 
 fn mk_default_xml(path: &std::path::Path) -> Result<()> {
-    let content = b"<superblock uuid=\"\" time=\"2\" transaction=\"3\" version=\"2\" data_block_size=\"128\" nr_data_blocks=\"16384\">
-  <device dev_id=\"10\" mapped_blocks=\"0\" transaction=\"0\" creation_time=\"0\" snap_time=\"1\">
+    let content = b"<superblock uuid=\"\" time=\"2\" transaction=\"0\" version=\"2\" data_block_size=\"128\" nr_data_blocks=\"16384\">
+  <def name=\"100\">
+    <range_mapping origin_begin=\"339\" data_begin=\"1036\" length=\"10\" time=\"0\"/>
+  </def>
+  <device dev_id=\"10\" mapped_blocks=\"0\" transaction=\"0\" creation_time=\"0\" snap_time=\"0\">
   </device>
-  <device dev_id=\"20\" mapped_blocks=\"0\" transaction=\"0\" creation_time=\"0\" snap_time=\"1\">
+  <device dev_id=\"20\" mapped_blocks=\"0\" transaction=\"0\" creation_time=\"0\" snap_time=\"0\">
   </device>
-  <device dev_id=\"30\" mapped_blocks=\"24\" transaction=\"0\" creation_time=\"0\" snap_time=\"1\">
+  <device dev_id=\"30\" mapped_blocks=\"24\" transaction=\"0\" creation_time=\"0\" snap_time=\"0\">
     <range_mapping origin_begin=\"274\" data_begin=\"8440\" length=\"17\" time=\"0\"/>
     <range_mapping origin_begin=\"485\" data_begin=\"15480\" length=\"7\" time=\"0\"/>
+  </device>
+  <device dev_id=\"40\" mapped_blocks=\"10\" transaction=\"0\" creation_time=\"0\" snap_time=\"1\">
+    <ref name=\"100\"/>
+  </device>
+  <device dev_id=\"50\" mapped_blocks=\"10\" transaction=\"0\" creation_time=\"1\" snap_time=\"1\">
+    <ref name=\"100\"/>
   </device>
 </superblock>";
     write_file(path, content)
@@ -318,6 +327,77 @@ fn merge_with_empty_origin() -> Result<()> {
         "sed",
         args!["-i", "s/dev_id=\"30\"/dev_id=\"20\"/g", &xml_expected],
     ))?;
+    run_ok(thin_dump_cmd(args![&meta_after, "-o", &xml_after]))?;
+    assert_eq!(md5(&xml_expected)?, md5(&xml_after)?);
+
+    Ok(())
+}
+
+// Corner case where the --origin and --snapshot values are identical
+#[test]
+fn merge_the_same_device() -> Result<()> {
+    let mut td = TestDir::new()?;
+    let meta_before = mk_metadata(&mut td)?;
+    let meta_after = mk_zeroed_md(&mut td)?;
+    let xml_expected = td.mk_path("expected.xml");
+    let xml_after = td.mk_path("after.xml");
+
+    run_ok(thin_check_cmd(args![&meta_before]))?;
+    run_ok(thin_merge_cmd(args![
+        "-i",
+        &meta_before,
+        "-o",
+        &meta_after,
+        "--origin",
+        "30",
+        "--snapshot",
+        "30"
+    ]))?;
+    run_ok(thin_check_cmd(args![&meta_after]))?;
+
+    run_ok(thin_dump_cmd(args![
+        &meta_before,
+        "--dev-id",
+        "30",
+        "-o",
+        &xml_expected
+    ]))?;
+
+    run_ok(thin_dump_cmd(args![&meta_after, "-o", &xml_after]))?;
+    assert_eq!(md5(&xml_expected)?, md5(&xml_after)?);
+
+    Ok(())
+}
+
+#[test]
+fn merge_devices_share_the_same_root() -> Result<()> {
+    let mut td = TestDir::new()?;
+    let meta_before = mk_metadata(&mut td)?;
+    let meta_after = mk_zeroed_md(&mut td)?;
+    let xml_expected = td.mk_path("expected.xml");
+    let xml_after = td.mk_path("after.xml");
+
+    run_ok(thin_check_cmd(args![&meta_before]))?;
+    run_ok(thin_merge_cmd(args![
+        "-i",
+        &meta_before,
+        "-o",
+        &meta_after,
+        "--origin",
+        "40",
+        "--snapshot",
+        "50"
+    ]))?;
+    run_ok(thin_check_cmd(args![&meta_after]))?;
+
+    run_ok(thin_dump_cmd(args![
+        &meta_before,
+        "--dev-id",
+        "40",
+        "-o",
+        &xml_expected
+    ]))?;
+
     run_ok(thin_dump_cmd(args![&meta_after, "-o", &xml_after]))?;
     assert_eq!(md5(&xml_expected)?, md5(&xml_after)?);
 
