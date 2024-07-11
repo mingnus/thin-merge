@@ -14,7 +14,7 @@ clap = { version = "4.5", default-features = false, features = [
   "suggestions",
 ] }
 exitcode = "1.1.2"
-thinp = { git = "https://github.com/mingnus/thin-provisioning-tools.git", branch = "2024-04-23-vectored-write", features = ["io_uring"] }
+thinp = { git = "https://github.com/jthornber/thin-provisioning-tools.git", tag = "v1.0.13", features = ["io_uring"] }
 
 [dev-dependencies]
 duct = "0.13"
