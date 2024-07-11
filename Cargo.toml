@@ -24,3 +24,6 @@ tempfile = "3.6"
 
 [features]
 no_cleanup = []
+
+[profile.release]
+debug = true
