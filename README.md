@@ -15,6 +15,7 @@ The use case closely resembles that of dm-clone. However, dm-clone isn't optimiz
 Install the Rust toolchain, then run the build command:
 
 ```bash
+git submodule update --init
 cargo build --release
 ```
 

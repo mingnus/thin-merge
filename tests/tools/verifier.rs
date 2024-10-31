@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::vec::Vec;
+use thin_merge::thinp;
 use thinp::thin::ir::{self, MetadataVisitor, Visit};
 use thinp::thin::xml;
 

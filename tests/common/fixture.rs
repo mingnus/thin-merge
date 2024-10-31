@@ -3,6 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use thin_merge::thinp;
 use thinp::file_utils;
 
 use crate::common::test_dir::TestDir;

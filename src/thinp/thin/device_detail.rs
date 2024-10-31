@@ -1,0 +1,1 @@
+../../../thin-provisioning-tools/src/thin/device_detail.rs

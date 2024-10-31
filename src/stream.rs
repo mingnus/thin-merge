@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
 use std::cmp::Ordering;
 use std::sync::Arc;
-use thinp::io_engine::IoEngine;
-use thinp::thin::block_time::*;
+
+use crate::io_engine::IoEngine;
+use crate::thin::block_time::*;
 
 use crate::mapping_iterator::MappingIterator;
 

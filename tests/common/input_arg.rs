@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::ffi::OsStr;
 
+use thin_merge::thinp;
 use thinp::file_utils;
 
 use crate::args;

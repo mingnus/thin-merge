@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use thin_merge::thinp;
 use thinp::io_engine::*;
 use thinp::pdata::btree_walker::btree_to_map;
 use thinp::thin::device_detail::DeviceDetail;

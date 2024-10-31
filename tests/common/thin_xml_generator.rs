@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs::OpenOptions;
 use std::ops::Range;
 use std::path::Path;
+use thin_merge::thinp;
 use thinp::thin::ir::{self, MetadataVisitor};
 use thinp::thin::xml;
 

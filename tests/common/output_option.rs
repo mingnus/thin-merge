@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use thin_merge::thinp;
 use thinp::file_utils;
 
 use crate::args;

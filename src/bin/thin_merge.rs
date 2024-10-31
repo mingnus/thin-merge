@@ -1,9 +1,10 @@
 use clap::{value_parser, Arg, ArgAction};
 use std::path::Path;
 use std::process::exit;
-use thinp::commands::engine::*;
-use thinp::commands::utils::*;
-use thinp::commands::Command;
+
+use thin_merge::thinp::commands::engine::*;
+use thin_merge::thinp::commands::utils::*;
+use thin_merge::thinp::commands::Command;
 
 use thin_merge::merge::*;
 

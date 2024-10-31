@@ -410,7 +410,7 @@ fn out_of_metadata_space() -> Result<()> {
     let xml_before = td.mk_path("before.xml");
     let meta_before = mk_zeroed_md(&mut td)?;
     let meta_after = td.mk_path("meta.bin");
-    thinp::file_utils::create_sized_file(&meta_after, 1_048_576)?; // 1MB
+    thin_merge::thinp::file_utils::create_sized_file(&meta_after, 1_048_576)?; // 1MB
 
     let mut s = FragmentedS::new(2, 131072);
     write_xml(&xml_before, &mut s)?;
