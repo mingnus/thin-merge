@@ -1,4 +1,4 @@
 [submodule "thin-provisioning-tools"]
 	path = thin-provisioning-tools
 	url = http://github.com/jthornber/thin-provisioning-tools.git
-	branch = v1.0.13
+	branch = v1.1.0
