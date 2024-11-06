@@ -32,7 +32,7 @@ quick-xml = "0.36"
 rand = "0.8"
 rangemap = "1.5"
 roaring = "0.10"
-rio = { git = "https://github.com/jthornber/rio", branch = "master", optional = true }
+rio = { version = "0.9", optional = true }
 safemem = "0.3"
 threadpool = "1.8"
 thiserror = "1.0"

@@ -562,7 +562,8 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "rio"
 version = "0.9.4"
-source = "git+https://github.com/jthornber/rio?branch=master#2979a720f671e836302c01546f9cc9f7988610c8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e98c25665909853c07874301124482754434520ab572ac6a22e90366de6685b"
 dependencies = [
  "libc",
 ]
