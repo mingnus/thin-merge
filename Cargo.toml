@@ -3,6 +3,10 @@ name = "thin-merge"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
+description = "Tool for merging data mappings of dm-thin external snapshots"
+repository = "https://github.com/mingnus/thin-merge"
+keywords = ["Linux", "storage", "device", "mapper", "dm-thin"]
+categories = ["command-line-interface"]
 
 [dependencies]
 atty = "0.2"
