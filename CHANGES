@@ -1,0 +1,14 @@
+v0.1.1
+======
+
+- Make the thinp dependency a git submodule to meet rpm packaging requirements
+- Revert the rio crate to the upstream release to facalitate package building
+- Update manifest
+
+v0.1.0
+======
+
+Initial release with the following features:
+
+- Support asynchronous read (io_uring) and vectored write
+- Support both merging and rebase operations
